@@ -1,0 +1,437 @@
+---
+title: "Project 2 - HUD Data"
+author: "Kayleah Griffen"
+date: "2/26/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+The objective of Project 2 is to get more practice tidying and transforming data. The US Department of Housing and Urban Development (HUD) collects data each year on people experiencing homelessness. One data set collected is called a Point in Time count. It is the count on a single night once a year of people experiencing homelessness. 
+
+The data for this analysis is provided on the US Department of Housing and Urban Development website.
+
+https://www.hudexchange.info/resource/3031/pit-and-hic-data-since-2007/
+
+There is no concrete users guide for the data but some knowledge about the data and column headers can be gained from the following two sources:
+
+1) https://files.hudexchange.info/resources/documents/PIT-Count-Methodology-Guide.pdf
+2) https://www.hudexchange.info/programs/hdx/guides/pit-hic/#hic-guides-and-tools
+
+The data is in the form of an xlsx file, where each year is a tab. Each tab contains the data for that year for each geographic area. Data is broken up into demographic data overall, then it is further broken down into several categories such as sheltered, unsheltered, individuals and demographics for each of those.
+
+The goal for this analysis is to be able to look at the overall homeless PIT counts over time for each demographic (age, race, gender, ethnicity) by Coc. Further analysis could be performed grouping by state or area category, also by looking at further specificity such as the sheltered and unsheltered counts then the individual data. 
+
+For the purpose of this specific analysis, the goal is to provide helpful data to the Shelters of Saratoga (SOS) - which is a Saratoga County-based human service agency that provides food, shelter, and housing services to people facing homelessness. Therefore the study will narrow in and try to understand COC NY-523 because that is the area SOS operates in. 
+
+## Processing
+
+First, load required packages.
+
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(kableExtra)
+library(rio)
+library(httr)
+```
+
+Read in the excel file, using the `rio` package.
+
+```{r}
+# Learned how to read in excel file from github from:
+# https://community.rstudio.com/t/read-xlsx-from-github/9386/7
+
+github_link <- "https://github.com/klgriffen96/spring23_data607_proj2/blob/main/2007-2022-PIT-Counts-by-CoC.xlsx?raw=true"
+temp_file <- tempfile(fileext = ".xlsx")
+req <- GET(github_link, 
+          # write result to disk
+           write_disk(path = temp_file))
+df_l <- import_list(temp_file)
+```
+
+The data read in was a list of dataframes, one for each year.
+
+To make the data more manageable, the objective is to create a set of dataframes that preserves the following information:
+
+- Coc Number
+- Coc Name
+- CoC Category
+- Year
+- Overall Homeless - Under 18
+- Overall Homeless - 18- 24
+- Overall Homeless - Over 24
+- Overall Homeless - Female
+- Overall Homeless - Male
+- Overall Homeless - Transgender
+- Overall Homeless - Non-Hispanic/Non-Latino
+- Overall Homeless - Hispanic/Latino
+- Overall Homeless - White
+- Overall Homeless - Black, African American, or African
+- Overall Homeless - Asian or Asian American
+- Overall Homeless - American Indian, Alaska Native, or Indigenous
+- Overall Homeless - Native Hawaiian or Other Pacific Islander
+- Overall Homeless - Multiple Races, 2022
+
+
+The following dataframes will be created to better organize the data: 
+
+Data from 2008 - 2022
+
+df_coc 
+- CoC Code
+- Coc State
+- Coc Number
+- Coc Name
+- CoC Category
+
+Data from 2008 - 2022
+
+df_overall
+- Coc Code
+- Year
+- Overall Homesless Count
+
+Data from 2014 - 2022 
+
+df_age
+- Coc Code
+- Year
+- Age group
+- Count 
+
+Data from 2015 - 2022 
+
+df_gender
+- Coc Code
+- Year
+- Gender group
+- Count
+
+Data from 2015 - 2022 
+
+df_ethnicity
+- Coc Code
+- Year
+- Ethnicity 
+- Count
+
+Data from 2015 - 2022
+
+df_race
+- Coc Code 
+- Year
+- Race group
+- Count
+
+Upon inspecting the data, this overall demographic data for race, ethnicity and gender is only available starting in 2015, and age range starting in 2014. 
+
+To illustrate some of the complexity of this data, the following is the dimensions of each dataframe for 2008-2022. Not only did the locations (CoCs) change over time, also what demographics were measured changed over time. This largely has to do with new demographics being added, and them being broken down in different ways (sheltered/ unsheltered/ individual/ family).
+
+```{r}
+for (i in 1:15){
+  print(dim(df_l[[i]]))
+}
+```
+First create the CoC dataframe. Note that one complexity of this is that if you go to the last tab in the file, you can see that multiple CoCs were aggregated and merged into another CoC over the years. For this dataframe the idea will be to preserve all CoCs that have ever existed. Only the data from 2022 has the CoC Category documented (ex. Largely Rural Coc, Largely Urban CoC) so only CoCs present in the 2022 data will have an Area type for them. The rest will have NAs.
+
+```{r}
+df_coc <- data.frame(
+  coc_code = character(),
+  coc_state = character(),
+  coc_number = integer(),
+  coc_name = character()
+)
+
+df_coc_cat <- data.frame(
+  coc_code = character(),
+  coc_cat = character()
+)
+
+for (i in 1:(length(df_l)-2)){
+  for (ii in 1:(dim(df_l[[i]])[1]-3)){
+    # Extract CoC specific information
+    coc_code <- df_l[[i]][["CoC Number"]][ii]
+    coc_state_num <- str_split(coc_code, "-")
+    coc_state <- coc_state_num[[1]][[1]]
+    coc_number <- as.integer(str_remove_all(coc_state_num[[1]][[2]], "[a-zA-z]*"))
+    coc_name <- df_l[[i]][["CoC Name"]][ii]
+    # Check if CoC info already in dataframe
+    if (i == 1) {
+      df_temp <- data.frame(
+        coc_code = coc_code,
+        coc_cat = df_l[[i]][["CoC Category"]][ii]
+      )
+      df_coc_cat <- rbind(df_coc_cat, df_temp)
+    }
+    if (any(str_detect(df_coc$coc_code, coc_code)) == FALSE) {
+      # If CoC info is not in dataframe, put it in the dataframe
+      df_temp <- data.frame(
+        coc_code = coc_code,
+        coc_state = coc_state,
+        coc_number = coc_number,
+        coc_name = coc_name
+      )
+      df_coc <- rbind(df_coc, df_temp)
+    }
+  }
+}
+
+# Add in the area type to the coc dataframe if it exists
+df_coc <- left_join(df_coc, df_coc_cat, by = c("coc_code" = "coc_code"))
+```
+
+The overall homeless dataframe.
+
+```{r}
+df_overall <- data.frame(
+  coc_code = character(),
+  year = integer(),
+  count = integer()
+)
+
+# Data from 2008- 2022
+for (i in 1:(length(df_l)-2)){
+  df_temp <- select(df_l[[i]], c('CoC Number', contains('Overall Homeless,')))
+  df_temp <- head(df_temp, -3)
+  df_temp <- df_temp |> pivot_longer(cols = !`CoC Number`, 
+                                     names_to = c(".value", "year"), 
+                                     names_sep = ",")
+  df_temp <- data.frame(coc_code = df_temp$`CoC Number`, 
+                        year = as.integer(df_temp$year), 
+                        count = df_temp$`Overall Homeless`)
+  df_overall <- rbind(df_overall, df_temp)
+}
+
+```
+
+The age dataframe. 
+
+```{r}
+df_age <- data.frame(
+  coc_code = character(),
+  year = integer(),
+  age_group = character(),
+  count = integer()
+)
+
+# Data from 2014- 2022
+for (i in 1:(length(df_l)-8)){
+  df_temp <- select(df_l[[i]], c('CoC Number', 
+                                 contains('Overall Homeless - Under'),
+                                 contains('Overall Homeless - Age'),
+                                 contains('Overall Homeless - Over')))
+  df_temp <- head(df_temp, -3)
+  df_temp <- df_temp |> pivot_longer(cols = !`CoC Number`, 
+                                     names_to = c(".value", "year"), 
+                                     names_sep = ",")
+  df_temp <- df_temp |> pivot_longer(cols = !`CoC Number`:year, 
+                                     names_to = c(".value", "age"), 
+                                     names_sep = " - ")
+  
+  df_temp <- data.frame(coc_code = df_temp$`CoC Number`, 
+                        year = as.integer(df_temp$year),
+                        age_group = df_temp$age,
+                        count = df_temp$`Overall Homeless`)
+  df_age <- rbind(df_age, df_temp)
+}
+```
+
+The gender dataframe.
+
+```{r}
+df_gender <- data.frame(
+  coc_code = character(),
+  year = integer(),
+  gender_group = character(),
+  count = integer()
+)
+
+# Data from 2014- 2022
+for (i in 1:(length(df_l)-9)){
+  df_temp <- select(df_l[[i]], c('CoC Number', 
+                                 contains('Overall Homeless - Female'),
+                                 contains('Overall Homeless - Male'),
+                                 contains('Overall Homeless - Transgender')))
+  df_temp <- head(df_temp, -3)
+  df_temp <- df_temp |> pivot_longer(cols = !`CoC Number`, 
+                                     names_to = c(".value", "year"), 
+                                     names_sep = ",")
+  df_temp <- df_temp |> pivot_longer(cols = !`CoC Number`:year, 
+                                     names_to = c(".value", "gender"), 
+                                     names_sep = " - ")
+  df_temp <- data.frame(coc_code = df_temp$`CoC Number`, 
+                        year = as.integer(df_temp$year),
+                        gender_group = df_temp$gender,
+                        count = df_temp$`Overall Homeless`)
+  df_gender <- rbind(df_gender, df_temp)
+}
+
+```
+
+The ethnicity dataframe.
+
+```{r}
+df_ethnicity <- data.frame(
+  coc_code = character(),
+  year = integer(),
+  ethnicity_group = character(),
+  count = integer()
+)
+
+# Data from 2014- 2022
+for (i in 1:(length(df_l)-9)){
+  df_temp <- select(df_l[[i]], c('CoC Number', 
+                                 contains('Overall Homeless - Non'),
+                                 contains('Overall Homeless - Hispanic')))
+  df_temp <- head(df_temp, -3)
+  df_temp <- df_temp |> pivot_longer(cols = !`CoC Number`, 
+                                     names_to = c(".value", "year"), 
+                                     names_sep = ",")
+  df_temp <- df_temp |> pivot_longer(cols = !`CoC Number`:year, 
+                                     names_to = c(".value", "ethnicity"), 
+                                     names_sep = " - ")
+  df_temp <- data.frame(coc_code = df_temp$`CoC Number`, 
+                        year = as.integer(df_temp$year),
+                        ethnicity_group = df_temp$ethnicity,
+                        count = df_temp$`Overall Homeless`)
+  df_ethnicity <- rbind(df_ethnicity, df_temp)
+}
+
+```
+
+The race dataframe.
+
+```{r}
+df_race <- data.frame(
+  coc_code = character(),
+  year = integer(),
+  race_group = character(),
+  count = integer()
+)
+
+# Data from 2014- 2022
+for (i in 1:(length(df_l)-9)){ 
+  df_temp <- select(df_l[[i]], c('CoC Number', 
+                                 contains('Overall Homeless - White'),
+                                 contains('Overall Homeless - Black'),
+                                 contains('Overall Homeless - Asian'),
+                                 contains('Overall Homeless - American'),
+                                 contains('Overall Homeless - Native'),
+                                 contains('Overall Homeless - Multiple')
+                                 ))
+  df_temp <- head(df_temp, -3)
+  df_temp <- df_temp |> pivot_longer(cols = !`CoC Number`, 
+                                     names_to = c("race", "year"), 
+                                     names_pattern = "Overall Homeless - (.+), (.+)$",
+                                     values_to = "count")
+  df_temp <- data.frame(coc_code = df_temp$`CoC Number`, 
+                        year = as.integer(df_temp$year),
+                        race_group = df_temp$race,
+                        count = df_temp$count)
+  df_race <- rbind(df_race, df_temp)
+}
+```
+
+## Analysis
+
+As mentioned in the introduction, the specific area of interest for this analysis is CoC NY-523 and how the overall quantity of people experiencing homelessness changes over time with respect to demographics of age, gender, ethnicity and race.
+
+```{r}
+df_overall %>%
+  filter(coc_code == "NY-523") %>%
+  ggplot(aes(x = year, y = count)) +
+  geom_point() +
+  geom_smooth(method = 'loess', formula = 'y ~ x')
+```
+
+Take a look at the age makeup.
+
+```{r}
+df_age %>%
+  filter(coc_code == "NY-523") %>%
+  ggplot(aes(x = year, y = count, fill=age_group)) +
+  geom_bar(stat="identity", position=position_dodge())
+```
+
+Take a look at the gender makeup.
+
+```{r}
+df_gender %>%
+  filter(coc_code == "NY-523") %>%
+  ggplot(aes(x = year, y = count, fill=gender_group)) +
+  geom_bar(stat="identity", position=position_dodge()) 
+```
+
+Take a look at the ethnic makeup.
+
+```{r}
+df_ethnicity %>%
+  filter(coc_code == "NY-523") %>%
+  ggplot(aes(x = year, y = count, fill = ethnicity_group)) +
+  geom_bar(stat="identity")
+```
+
+Take a look at the racial makeup. 
+
+```{r}
+df_race %>%
+  filter(coc_code == "NY-523") %>%
+  ggplot(aes(x = year, y = count, fill=race_group)) +
+  geom_bar(stat="identity") 
+```
+
+Now rather than just looking at NY-523 alone, look at it compared to groups similar to it. 
+
+```{r}
+filter(df_coc, coc_code=="NY-523")
+```
+
+
+NY-523 is in the "Largely SUburban CoC" category.
+
+```{r}
+lg_suburb_coc <- filter(df_coc, coc_cat== "Largely Suburban CoC")
+dim(lg_suburb_coc)[1]
+```
+
+There are 169 other "Largely Suburban" Cocs. 
+
+Now, to understand how NY-523 is doing in comparison to other CoC in terms of home many people are experiencing homelessness, make a plot that graphs the changes over time, highlighting NY-523 in red.
+
+```{r}
+coc_like_523 <- filter(df_overall, coc_code %in% lg_suburb_coc$coc_code)
+
+coc_like_523 <- (coc_like_523 %>% 
+                   group_by(coc_code) %>% 
+                   mutate(nor = count/max(count))) 
+# https://community.rstudio.com/t/change-colors-according-to-the-coefficient-calculated-by-the-geom-smooth/57616/2 for FitFunc
+
+FitFunc <- function(x1, x2) {
+  coef(lm(x2 ~ x1))[2]
+}
+
+Stat <- coc_like_523 %>% group_by(coc_code) %>% summarize(FIT = FitFunc(.data$year, .data$count))
+
+coc_like_523 <- coc_like_523 %>% inner_join(Stat, by = "coc_code")
+
+coc_like_523 %>%
+  ggplot(aes(x = year, y = nor, group = coc_code, color = FIT)) +
+  geom_line(linewidth=0.2, alpha=0.4) + 
+  geom_point(data = subset(coc_like_523,  coc_code=="NY-523"),color = "red") +
+  geom_line(data = subset(coc_like_523,  coc_code=="NY-523"),color = "red")
+
+```
+
+
+This is inarguably, not the best visualization, but one feature that I did want to note is that it seems in 2021 - homelessness counts were generally less than any other year. Likely, the COVID-19 pandemic affected the count - more resources were being given to people or maybe the counts were not accurate for that year.
+
+## Conclusion
+
+The Point in Time Count data on people experiencing homelessness provided by the US Department of Housing and Urban Development was analyzed. The data presented some challenges one being that the demogrphic data being collected over the years changed and another being that the CoCs (locations) where data was being collected over the years changed. 
+
+This analysis succeeded in the goal of being able to analyze overall homeless PIT counts over time for each demographic (age, race, gender, ethnicity) for CoC NY-523. 
+
