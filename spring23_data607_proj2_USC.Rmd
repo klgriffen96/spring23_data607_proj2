@@ -1,0 +1,211 @@
+---
+title: "Project 2 - USC Data"
+author: "Kayleah Griffen"
+date: "2/26/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+The objective of Project 2 is to get more practice tidying and transforming data. The U.S. Census International Data collects multiple types of data on 227 countries/areas. 
+
+The data  is available at:
+https://www.census.gov/data-tools/demo/idb/#/country?COUNTRY_YEAR=2023&COUNTRY_YR_ANIM=2023
+
+The explanation for the table collected is in:
+https://api.census.gov/data/timeseries/idb/5year/variables.html
+
+This analysis will compare the mortality rates for males and females between countries. The mortality rates are deaths per 1,000 population. Additionally, it will compare mortality rates by general geographic area (Asia, Africa, North America, South America, Europe, and Australia) over the years.
+
+## Processing
+
+First, load required packages.
+
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(kableExtra)
+```
+
+Load the data.
+
+```{r}
+path <- "https://raw.githubusercontent.com/klgriffen96/spring23_data607_proj2/main/usc_international_mortality_2010_23.csv"
+df <- read.csv(path)
+
+# https://www.kaggle.com/datasets/statchaitya/country-to-continent
+path <- "https://raw.githubusercontent.com/klgriffen96/spring23_data607_proj2/main/countryContinent.csv"
+cc <- read.csv(path)
+```
+
+Ultimately, the component names in the data frame should be the following: 
+
+- country
+- continent 
+- year
+- age_group
+- sex
+
+Take a look at the dataframe, notice that what the column names currently are do not have all the information. What the column names should be is stored both in the current column name as well as the first row.
+```{r}
+head(df)
+
+```
+
+First rename the columns based on the information from the current column name and the first row.
+
+```{r}
+for (i in 6:length(df)){
+  if (str_starts(colnames(df)[i], "[A-WY-Z]")){
+    temp <- colnames(df)[i]
+  }
+  colnames(df)[i] <- paste(temp, df[[i]][1] ,sep = ',')
+}
+colnames(df)[4] <- "country"
+colnames(df)[5] <- "year"
+```
+
+Cut out the first row which no longer has information needed as that information got appended to the column name. Also remove columns before country which are not needed.
+
+```{r}
+df <- df[-1,]
+df <- df[ -c(1:3)]
+```
+
+Perform the necessary pivots to get the desired dataframe, where rather than having a column for each age range and sex combination that information is stored in rows and the new columns are age range and sex.
+
+```{r}
+df_l <- df |> 
+  pivot_longer(
+    cols = !(country:year),
+    names_to = c("age_range", "sex"), 
+    names_sep = ",",
+    values_to = "count"
+  )
+```
+
+Make the year, and mortality rates be doubles rather than characters.
+```{r}
+for (i in 1:length(df_l)){
+  if (str_detect(df_l[[i]][1], "[0-9]+")){
+    df_l[[i]] <- as.double(df_l[[i]])
+  }
+}
+```
+
+Only save the relevant information, country and continent from the `cc` dataframe. Then, join in the continent data from the country to continent dataframe.
+
+```{r}
+cc <- cc[c("country", "continent")]
+df_c <- left_join(df_l, cc, by = c("country" = "country"))
+```
+
+Take a look at the new dataframe.
+
+```{r}
+head(df_c)
+```
+
+I noticed not all of the countries were designated a continent. I checked out the nas and went through the csv from kaggle, updating the names that had come up as na to match the USC names. There were still some nas left over.
+
+```{r}
+df_na <- df_c |> filter(is.na(continent))
+dim(df_na)
+
+# write.csv(df_na, "C:/Users/kgriffen/OneDrive - Globalfoundries/Documents/Data_science/na.csv")
+# I went through the NAs and matched up as many country names as I could. Got NAs down to 1000ish from 6000
+```
+
+Widen the dataframe so that the male mortality rate can be extracted more easily.
+
+```{r}
+df_w <- pivot_wider(df_c, names_from = sex, values_from = count)
+df_w <- df_w |> mutate(male_mortality_rate = 
+                         (Male)/(Female+Male))
+head(df_w)
+```
+
+## Analysis
+
+As previously mentioned this analysis will compare the mortality rates for males and females between countries over the years. Additionally, it will compare mortality rates by general geographic area (Asia, Africa, North America, South America, Europe, and Australia). 
+
+Compare mortality rate for males and females by country.
+
+```{r, warning=FALSE}
+df_w|>
+  filter(is.na(continent) == FALSE &
+         age_range != "Life.Expectancy.at.Birth") |>
+  group_by(country, year, age_range) |> 
+  ggplot(aes(x = year, y = male_mortality_rate, color=country)) +
+  geom_point() +
+  facet_grid(~age_range) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), 
+                                   legend.position="none")
+```
+
+What is noticeable from this graphic is that in most countries, across all the years - the male death rate is higher than that of females.
+
+Compare mortality rates by continent, just looking at mortality rate under 5. 
+
+```{r}
+df_cont <- df_c|>
+  filter(str_starts(age_range, "Under") & 
+           (sex == "Male" | sex == "Female") &
+           is.na(continent) == FALSE) |>
+  group_by(continent, sex) |> 
+  summarize(
+  mean_under_5yrs = round(mean((count), na.rm = TRUE)), 
+  n = n() , .groups = 'drop'
+  ) |>
+  arrange(desc(mean_under_5yrs))
+
+kable(df_cont) |>
+  kable_styling("striped")
+```
+
+```{r}
+df_c|>
+  filter(str_starts(age_range, "Under") & 
+           (sex == "Male" | sex == "Female") &
+           is.na(continent) == FALSE) |>
+  group_by(continent, sex) |> 
+  summarize(
+  mean_under_5yrs = round(mean((count), na.rm = TRUE)), 
+  n = n() , .groups = 'drop'
+  ) |>
+  arrange(desc(mean_under_5yrs)) |>
+  ggplot(aes(x = continent, y = mean_under_5yrs, fill=sex)) +
+  geom_bar(stat="identity", position = "dodge") 
+```
+
+It looks like Africa has the highest death rate and Europe the least.
+
+Now, look at all 3 age groups.
+
+```{r}
+
+df_c|>
+  filter((sex == "Male" | sex == "Female") &
+           is.na(continent) == FALSE &
+         age_range != "Life.Expectancy.at.Birth") |>
+  group_by(continent, age_range, sex) |> 
+  summarize(
+  mean_mortality_rate = round(mean((count), na.rm = TRUE)), 
+  n = n() , .groups = 'drop'
+  ) |>
+  arrange(desc(mean_mortality_rate)) |>
+  ggplot(aes(x = continent, y = mean_mortality_rate, fill=sex)) +
+  geom_bar(stat="identity", position = "dodge")  +
+  facet_grid(~age_range) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+Inspecting all three age ranges available, Africa still has the highest child mortality rates and Europe the least.
+
+
+## Conclusion
+
+The objective was to study the USC International data, paying specific attention to the mortality rates between male and females from 2010-2023, looking at country level data and at continent level. This goal was achieved and interesting insights were gained, such as the mortality rate being greater in males than in females in general and Africa having the highest mortality rates and Europe the least.
