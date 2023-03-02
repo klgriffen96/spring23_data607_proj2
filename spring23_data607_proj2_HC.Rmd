@@ -1,0 +1,226 @@
+---
+title: "Project 2 - Health Care Data"
+author: "Kayleah Griffen"
+date: "3/1/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+The objective of Project 2 is to get more practice tidying and transforming data. The CDC publishes data regarding employment numbers and mean salaries of healthcare workers for selected years. 
+
+The data is available at:
+https://ftp.cdc.gov/pub/Health_Statistics/NCHS/Publications/Health_US/hus20-21tables/hcempl.xlsx
+
+For analysis, the objective is to look at the trend in each profession and see if employment has been increasing or decreasing and compare this with the change in mean salary. Also, determine which profession has grown most throughout the last 20 years.
+
+## Processing
+
+First, load required packages.
+
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(kableExtra)
+library(rio)
+library(httr)
+```
+
+Load the data and take a look at it.
+
+```{r, message=FALSE}
+# Learned how to read in excel file from github from:
+# https://community.rstudio.com/t/read-xlsx-from-github/9386/7
+
+github_link <- "https://github.com/klgriffen96/spring23_data607_proj2/blob/main/hcempl.xlsx?raw=true"
+temp_file <- tempfile(fileext = ".xlsx")
+req <- GET(github_link, 
+          # write result to disk
+           write_disk(path = temp_file))
+df <- import(temp_file, skip=3)
+kable(head(df))  |>
+  kable_styling("striped")
+```
+
+
+Ultimately, the component names in the data frame should be the following: 
+
+- occupation
+- occupation_category
+- year
+- people_employed 
+- mean_hourly_wage
+
+First notice how the information that we want to be the column name in most cases is spread between the column name and the first row, rename the columns so they have all the relevant information.
+
+```{r}
+df <- rename(df, employment = "Employment\\1")
+df <- rename(df, mean_hourly_wage = "Mean hourly wage (dollars)\\2")
+temp <- ""
+for (i in 1:length(df)){
+  if (str_starts(colnames(df)[i], "[a-zA-Z]")){
+    temp <- colnames(df)[i]
+  }
+  colnames(df)[i] <- paste(temp, df[[i]][1] ,sep = ',')
+  if (i == 1) {
+    colnames(df)[i] <- df[[i]][1]
+  }
+}
+df <- rename(df, occupation_title = "Occupation title")
+kable(head(df))  |>
+  kable_styling("striped")
+```
+
+Cut out the first row which no longer has information needed as that information got appended to first row. Cut out the last three rows which contained notes.
+
+```{r}
+df <- df[-1,]
+df <- head(df, - 3)  
+```
+
+There are two categories of occupations which is worth preserving, there is "Health care practitioners and technical occupations" and then there is "Health care support occupations". These are good to preserve because analysis can be broken up by category. These two distinctions are called out as a row in the occupation column, and then they have no column associated with them. Create a column for occupation type and fill it in with the appropriate name.
+
+```{r}
+occupation_category_list <- c()
+temp <- ""
+for (i in 1:dim(df)[1]){
+  if (str_detect(df$occupation_title[i], "occupations")){
+    temp <- df$occupation_title[i]
+  }
+  occupation_category_list <- append(occupation_category_list, temp)
+}
+df <- mutate(df, occupation_category = occupation_category_list)
+```
+
+Now remove those rows that just have the occupation category and no data.
+
+```{r}
+cat <- unique(df$occupation_category)
+rem <- c()
+for (i in 1:dim(df)[1]){
+  if (df$occupation_title[i] %in% unique(df$occupation_category)){
+    rem <- append(rem, i)
+  }
+}
+df <- df[-(rem),]
+```
+
+Some of the data was read in as numbers and others read in as characters, change so that every number is represented as an integer.
+
+```{r, warning=FALSE}
+for (i in 1:length(df)){
+  if (str_detect(colnames(df)[i], "occupation") == FALSE){
+    df[[i]] <- as.integer(df[[i]])
+  }
+}
+
+```
+
+Now that the data has been cleaned up a bit, perform the necessary pivots to get the desired dataframe.
+
+```{r}
+df_l <- df |> 
+  pivot_longer(
+    cols = !(occupation_title | occupation_category),
+    names_to = c("emp_count_wage", "year"), 
+    names_sep = ",",
+    values_to = "count_wage"
+  )
+
+df_l$year <- as.integer(df_l$year)
+
+df_w <- df_l |>
+  pivot_wider(names_from = emp_count_wage,
+              values_from = count_wage
+  )
+```
+
+Take a look at the new dataframe.
+
+```{r}
+head(df_w)
+```
+
+
+## Analysis
+
+As previously mentioned this analysis is to look at the trend in each profession and see if employment has been increasing or decreasing and compare this with the change in mean salary. Also, determine which profession has grown most throughout the last 20 years.
+
+First, just get a general idea of the data, did employment go up or go down?
+
+```{r, warning=FALSE}
+ggp <- df_w|>
+  group_by(occupation_title) |>
+  mutate(emp_norm = employment/max(employment)) |>
+  ggplot(aes(x = year, y = emp_norm, color=occupation_title)) +
+  geom_point() +
+  geom_smooth(method = lm, se = FALSE, formula = 'y ~ x') +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), 
+                                   legend.position="none")
+
+show(ggp)
+
+```
+
+Based on this plot, not all employment numbers increased. Check the 3 professions employment increased the most for and then the three professions it increased the least (or decreased) for.
+
+
+```{r, warning=FALSE}
+df_n <- df_w|>
+  group_by(occupation_title) |>
+  mutate(emp_norm = employment/max(employment)) |>
+  filter(year == 2020,
+         is.na(emp_norm) == FALSE) |>
+  arrange(desc(emp_norm), desc(employment))
+
+kable(head(df_n,3))  |>
+  kable_styling("striped")
+
+kable(tail(df_n,3))  |>
+  kable_styling("striped")
+```
+
+It looks like the professions that had the least relative growth in 2020 were all in the health care support occupations category. 
+
+Now, take a look at wages.
+
+```{r, warning=FALSE}
+ggp <- df_w|>
+  group_by(occupation_title) |>
+  ggplot(aes(x = year, y = mean_hourly_wage, color=occupation_title)) +
+  geom_point() +
+  geom_smooth(method = lm, se = FALSE, formula = 'y ~ x') +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), 
+                                   legend.position="none")
+
+show(ggp)
+
+```
+
+It looks like across all professions, hourly wage grew. Check which 3 professions hourly wages grew the most and which 3 grew the least.
+
+```{r, warning=FALSE}
+df_n <- df_w|>
+  group_by(occupation_title) |>
+  mutate(wage_norm = mean_hourly_wage/max(mean_hourly_wage),
+         wage_diff = 1 - min(wage_norm)) |>
+  filter(is.na(wage_diff) == FALSE,
+         year == 2020) |>
+  arrange(desc(wage_diff))
+
+kable(head(df_n,3))  |>
+  kable_styling("striped")
+
+kable(tail(df_n,3))  |>
+  kable_styling("striped")
+
+```
+
+The occupation category that wages grew the least for was Health care support occupations, so it is no surprise that that category sees professionals leaving - both Occupational therapy aids and Medical transcriptions are listed in the bottom 3 pay increase and have high percentages of their workforce leaving.
+
+## Conclusion
+
+In conclusion, the goal was to be able to study the CDC data on employment numbers and wages for health care workers. This objective was met. 
